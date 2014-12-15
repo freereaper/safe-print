@@ -52,8 +52,8 @@ app_status_t printer_param_init(void)
 		if (printer.w_buf) free(printer.w_buf);
 		if (printer.r_buf) free(printer.r_buf);
 		return APP_NOMEM_ERR;
-	}	
-	
+	}
+
 	return APP_STATUS_OK;
 }
 
@@ -63,7 +63,7 @@ int main(int argc, char *argv)
 	int status_len = 0;
 	int fd;
 	void *write_buf, *read_buf;
-	
+
 	struct app_config *config = &printer.config;
 
 	if (init_server_config(config) != APP_STATUS_OK ) {
@@ -71,19 +71,19 @@ int main(int argc, char *argv)
 	}
 
 	log_sys_init(config);
-	
-	if (printer_param_init()!= APP_STATUS_OK ) {
+
+	if (printer_param_init()!= APP_STATUS_OK) {
 		goto bugout;
 	}
 
-	if (printer.open(&printer.libusb)) {
+	if (printer.open(&printer.libusb) != APP_STATUS_OK) {
 		sys_log(LOGS_ERROR, "can not open printer\n");
 		return APP_NODEV_ERR;
 	}
-	
+
 	//fprintf(stderr, "%s , %d\n", __FUNCTION__, __LINE__);
 
-	
+
 #if 0
 	fd = open(config->firmware, O_RDONLY);
 	if (fd < 0) {
@@ -165,5 +165,7 @@ int main(int argc, char *argv)
 
 bugout:
 		return APP_STATUS_OK;
+err_out:
+		printer.close(&printer.libusb);
 
 }

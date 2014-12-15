@@ -37,10 +37,10 @@ static bool resolve_bool(const char *val)
 		return true;
 	}
 	else {
-		sys_log(LOGS_ERROR, "unsupported config files\n");	
+		sys_log(LOGS_ERROR, "unsupported config files\n");
 		exit(-1);
 	}
-	
+
 }
 
 static int handler(void* user, const char* section, const char* name,
@@ -49,22 +49,22 @@ static int handler(void* user, const char* section, const char* name,
     struct app_config *config = (struct app_config *)user;
 
     if (MATCH("log", "log_file")) {
-        config->log_file = strdup(value);
+		config->log_file = strdup(value);
     }
     else if (MATCH("log", "verbose")) {
-        config->log_verbose = resolve_bool(value);
+		config->log_verbose = resolve_bool(value);
     }
     else if (MATCH("log", "syslog_enabled")) {
-        config->syslog_enabled =  resolve_bool(value);
+		config->syslog_enabled =  resolve_bool(value);
     }
     else if (MATCH("log", "level")) {
-    	config->log_level = atoi(value);
+		config->log_level = atoi(value);
     }
     else {
-        return 0;  /* unknown section/name, error */
+		return 0;  /* unknown section/name, error */
     }
-   
-    return 1;
+
+		return 1;
 }
 
 

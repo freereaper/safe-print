@@ -86,6 +86,13 @@ bugout:
 	if (confptr != NULL) {
 		libusb_free_config_descriptor(confptr);
 	}
+	if (device_list != NULL) {
+		libusb_free_device_list(device_list, 1);
+		device_list = NULL;
+	}
+	libusb_exit(libusb_ctx);
+	libusb_ctx = NULL;
+
 	return APP_NODEV_ERR;
 }
 
@@ -168,21 +175,27 @@ static int claim_interface(struct libusb_component *com)
 
 	if (ret = libusb_open(device, &com->handle)) {
 		sys_log(LOGS_ERROR, "failed to open device, error code: %d\n", ret);
+		goto err_open;
 	}
 
 	if (ret = libusb_claim_interface(com->handle, iface)) {
-		libusb_close(com->handle);
-		fprintf(stderr, "unable to claim interface\n");
-		com->handle = NULL;
+		sys_log(LOGS_ERROR, "unable to claim interface\n");
+		goto err_claim;
 	}
 
 	if (ret = libusb_set_interface_alt_setting(com->handle, iface, altsetting)) {
-		libusb_release_interface(com->handle, iface);
-		libusb_close(com->handle);
-		com->handle = NULL;
-		fprintf(stderr, "unable to set interface\n");
+		sys_log(LOGS_ERROR, "unable to set interface\n");
+		goto err_set;
 	}
 
+	return ret;
+
+err_set:
+	libusb_release_interface(com->handle, iface);
+err_claim:
+	libusb_close(com->handle);
+	com->handle = NULL;
+err_open:
 	return ret;
 }
 
@@ -190,20 +203,21 @@ app_status_t open_device(struct libusb_component  *libusb_component)
 {
 	int ret = 0;
 
-	ret = get_libusb_device(libusb_component);
-	if (ret) {
+	if (ret = get_libusb_device(libusb_component)) {
 		sys_log(LOGS_WARNING, "unable to find usb printer device \n");
 		return APP_NODEV_ERR;
 	}
 
-	ret = claim_interface(libusb_component);
-	if (ret) {
+	if (ret = claim_interface(libusb_component)) {
 		sys_log(LOGS_WARNING, "unable to clain interface\n");
+		libusb_free_device_list(device_list, 1);
+		device_list = NULL;
+		libusb_exit(libusb_ctx);
+		libusb_ctx = NULL;
 		return APP_NODEV_ERR;
 	}
 
 	return APP_STATUS_OK;
-	
 }
 
 
