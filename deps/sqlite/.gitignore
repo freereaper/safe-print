@@ -1,0 +1,8 @@
+.*.swp
+*.[oa]
+*.l[oa]
+libtool
+Makefile
+*.log
+.deps/
+.libs/

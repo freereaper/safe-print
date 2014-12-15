@@ -1,0 +1,4 @@
+config.o: config.c common.h printer.h musb.h config.h
+log.o: log.c log.h printer.h musb.h common.h
+musb.o: musb.c common.h log.h printer.h musb.h
+printer.o: printer.c common.h log.h printer.h musb.h config.h

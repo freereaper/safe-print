@@ -1,0 +1,7 @@
+*.o
+*.a
+*.log
+*.l[oa]
+[mM]akefile
+.deps/
+.libs/
