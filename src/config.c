@@ -60,6 +60,9 @@ static int handler(void* user, const char* section, const char* name,
     else if (MATCH("log", "level")) {
 		config->log_level = atoi(value);
     }
+    else if (MATCH("app", "firmware")) {
+    	config->firmware = strdup(value);
+    }
     else {
 		return 0;  /* unknown section/name, error */
     }
@@ -79,7 +82,7 @@ app_status_t init_server_config(struct app_config *config)
 
 	/* read value from config file */
     if (ini_parse("config.ini", handler, config) < 0) {
-        fprintf(stderr, "Can't load config file\n");
+        sys_log(LOGS_ERROR, "Can't load config file\n");
         return APP_NOENT_ERR;
     }
 

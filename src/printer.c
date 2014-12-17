@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pthread.h>
 #include "common.h"
 #include "log.h"
 #include "musb.h"
@@ -49,8 +50,14 @@ app_status_t printer_param_init(void)
 
 	if (printer.w_buf == NULL || printer.r_buf == NULL) {
 		sys_log(LOGS_ERROR, "can not allocate memory\n");
-		if (printer.w_buf) free(printer.w_buf);
-		if (printer.r_buf) free(printer.r_buf);
+		if (printer.w_buf) {
+			free(printer.w_buf);
+			printer.w_buf = NULL;
+		}
+		if (printer.r_buf) {
+			free(printer.r_buf);
+			printer.r_buf = NULL;
+		}
 		return APP_NOMEM_ERR;
 	}
 
@@ -62,110 +69,251 @@ int main(int argc, char *argv)
 	int len = 0;
 	int status_len = 0;
 	int fd;
-	void *write_buf, *read_buf;
+	int write_bytes = 0;
+	app_status_t ret;
 
 	struct app_config *config = &printer.config;
 
-	if (init_server_config(config) != APP_STATUS_OK ) {
-		 goto bugout;
+	ret = init_server_config(config);
+	if (ret != APP_STATUS_OK ) {
+		goto err1_out;
 	}
 
 	log_sys_init(config);
 
-	if (printer_param_init()!= APP_STATUS_OK) {
-		goto bugout;
+	ret = printer_param_init();
+	if (ret!= APP_STATUS_OK) {
+		goto err1_out;
+	}
+	
+	ret = printer.open(&printer.libusb);
+	if ( ret != APP_STATUS_OK) {
+		goto err2_out;
 	}
 
-	if (printer.open(&printer.libusb) != APP_STATUS_OK) {
-		sys_log(LOGS_ERROR, "can not open printer\n");
-		return APP_NODEV_ERR;
+	ret = printer_init();
+	if (ret != APP_STATUS_OK) {
+		goto err3_out;
 	}
-
-	//fprintf(stderr, "%s , %d\n", __FUNCTION__, __LINE__);
-
-
-#if 0
-	fd = open(config->firmware, O_RDONLY);
-	if (fd < 0) {
-		sys_log(LOGS_ERROR, "unable to open firmware file \n");
-		return SERVICE_ERR;
-	}
-
-	while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
-		int size = len;
-		int total = 0;
-		int write_bytes = 0;
-
-		while (size > 0) {
-			write_bytes = printer.write(&printer.libusb, write_buf+total, size, 5*1000);
-
-			fprintf(stderr, "the rest length: %d, write length: %d\n", size, write_bytes);
-
-			total += write_bytes;
-			size  -= write_bytes;
-		}
-
-	}
-	close(fd);
-
-//	printf("%s, %d\n", __FUNCTION__, __LINE__);
-	int	total_len = 0;
-	while (total_len < (sizeof(pjl_ustatus_cmd) -1)) {
-		len =	printer.write(&printer.libusb, pjl_ustatus_cmd+total_len, sizeof(pjl_ustatus_cmd)-1-total_len, 5*1000);
-		total_len += len;
-		fprintf(stderr, "write length : %d\n", len);
-	}
-
+	
+	
 	fd = open("/project/test.zc", O_RDONLY);
 	if (fd < 0) {
-		fprintf(stderr, "unable to open firmware file \n");
-		return SERVICE_ERR;
+		sys_log(LOGS_ERROR, "unable to open write file \n");
+		goto err4_out;
 	}
 
 	while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
-		int size = len;
-		int total = 0;
-		int write_bytes = 0;
-
-		while (size > 0) {
-			write_bytes = printer.write(&printer.libusb, write_buf+total, size, 5*1000);
-
-			fprintf(stderr, "the rest length: %d, write length: %d\n", size, write_bytes);
-
-			total += write_bytes;
-			size  -= write_bytes;
+		app_status_t status = printer_write(write_buf, len, 10, &write_bytes);
+		if (status != APP_STATUS_OK) {
+			close(fd);
+			goto err4_out;
 		}
-
 	}
 	close(fd);
+	
+	printer_write(pjl_job_end_cmd, sizeof(pjl_job_end_cmd)-1, 3, &write_bytes);
+	printer_write(pjl_ustatus_off_cmd, sizeof(pjl_ustatus_off_cmd)-1, 3, &write_bytes);
+	
 
-
-
-//	printf("%s, %d\n", __FUNCTION__, __LINE__);
-
-	int i = 0;
-	while ( i++ < 10) {
-		status_len = printer.read(&printer.libusb, buff, sizeof(buff), 5*1000);
-		buff[status_len] =	0 ;
-		fprintf(stderr, "read buf length: %d, %s\n", status_len, buff);
+err4_out:
+	pthread_mutex_lock(&printer.cureent_task.mutex);
+	printer.current_task.abort = 1;
+	while (!printer.current_task.done) {
+		pthread_cond_wait(&printer.task.read_done_cond, &printer.cureent_task.mutex);
 	}
+	pthread_mutex_unlock(&printer.cureent_task.mutex);
+	pthread_mutex_destroy(&printer.cureent_task.mutex);
+	pthread_cond_destroy(&printer.task.read_done_cond);
 
-	total_len = 0;
-	while (total_len < (sizeof(pjl_ustatus_cmd) -1)) {
-		len =	printer.write(&printer.libusb, pjl_ustatus_cmd+total_len, sizeof(pjl_ustatus_cmd)-1-total_len, 5*1000);
-		total_len += len;
-		fprintf(stderr, "write length : %d\n", len);
-	}
-
+err3_out:
 	printer.close(&printer.libusb);
+err2_out:
+	free(printer.w_buf)
+	free(printer.r_buf)
+	printer.w_buf = NULL;
+	printer.r_buf = NULL;
+err1_out:
+	return ret;
+}
 
-	return SERVICE_OK;
+static app_status_t printer_write(void *buf, int size, int timeout_sec, int *bytes_write)
+{
+	int usec;
+	int len = 0;
+	int total = 0;
+	int retry_cnt = 0;
+	app_status_t status = APP_STATUS_OK;
+	
+	usec = timeout_sec < 5 ? 5 * 1000000 : timeout_sec * 1000000;
+	
+	while (total < size && retry_cnt < WRITE_RETRY_MAX) {
+		len = printer.write(&printer.libusb, buf+total,  size-total, usec);
+		
+		if (printer.status_code >= 41000) {
+			sys_log(LOGS_ERROR, "printer break down \n");
+			status = APP_IO_ERROR;
+			break;
+		}
+		
+		if ( len < 0) {
+			sys_log(LOGS_ERR, "write failed\n");
+			status = APP_IO_ERR;
+			break;
+		}
+		total += len;
+		retry_cnt++;
+	}
+	
+	
+	if (retry_cnt == WRITE_RETRY_MAX) {
+		status = APP_TIMEOUT_ERR;
+	}
+		
+	*bytes_write = total;
+	
+	return status;
+}
 
-#endif
 
-bugout:
+static app_status_t load_firmware()
+{
+	int len;
+	int fd = open(config->firmware, O_RDONLY);
+	void *write_buf = printer.w_buf;
+	app_status_t status = APP_NOENT_ERR;
+	if (fd < 0) {
+		sys_log(LOGS_ERROR, "unable to open firmware file \n");
+	}
+	else {
+		while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
+			int write_bytes = 0;
+			
+			status = printer_write(write_buf, len, 10, &write_bytes);
+			
+			if (status != APP_STATUS_OK) {
+				break;
+			}
+			
+		}
+	}
+	
+	close(fd);
+	
+	return status;
+	
+}
+
+
+static app_status_t printer_start(void)
+{
+	int bytes_write;
+	app_status_t ret = APP_STATUS_OK;
+	
+	do {
+		if ((ret = load_firmware()) != APP_STATUS_OK) {
+			break;
+		}
+		
+		printer_write(pjl_ustatus_cmd, sizeof(pjl_ustatus_cmd) - 1, 3, &bytes_write);
+		pthread_mutex_init(&printer.current_task.mutex, NULL);
+		pthread_cond_init(&printer.current_task.read_done_cond, NULL);
+		pthread_create(&printer.current_task.tid, NULL, (void *(*)(void *))read_status_thread, NULL);
+	} while (0);
+	
+	return ret;
+
+}
+
+static void prase_status(char *buff, int *status, int *end_page)
+{
+	char *p;
+	
+	if (buff[0] == '\0') {
+		return;	
+	}
+	
+	if ((p = strcasestr(buff, "code=")) != NULL) {
+		*status = strtol(p+5, NULL, 10);
+	}
+	
+	if ((p = strcasestr(buff, "ustatus job")) != NULL) {
+		if (strncasecmp(p+13, "end", 3) == 0) {
+			if ((p = strcasestr(p+5+13, "pages=")) != NULL) {
+				*end_page = strtol(p+6, NULL, 10);
+			}
+		}
+	}
+}
+
+static void read_status_thread(void *args)
+{
+	struct printer_task *task = &(printer.current_task);
+	int bytes_read;
+	app_status_t status = APP_STATUS_OK;
+	
+	pthread_detach(pthread_self());
+	sys_log(LOGS_INFO, "Starting read status thread %d\n", (int)printer.current_task.tid);
+	
+	/* default is ready */
+	printer->status_code = 10001;
+	task->end_page  	 = 0;
+	task->done      	 = 0;
+	task->abort     	 = 0;
+	
+	while (!task->abort) {
+		status = printer_read(printer->r_buf, RD_BUFFER_SIZE, 0, &bytes_read);
+		
+		switch (status) {
+		case APP_STATUS_OK:
+			prase_status((char *)(printer.r_buf), &printer.status_code, &task->end_page);
+			break;
+		case APP_TIMEOUT_ERR:
+			sleep(1);
+			break;
+		case APP_IO_ERR:
+			printer.status_code = 5000+status;
+		default:
+			goto io_err:
+		}	
+	}
+	
+io_err:
+	task->done = 1;
+	pthread_cond_signal(&task->read_done_cond);
+	
+}
+
+
+
+
+static app_status_t printer_read(void *buf, int size, int timeout_sec, int *bytes_read)
+{
+	int usec;
+	int len = 0;
+	
+	*bytes_read = 0;
+	
+	/* minmum timeout is 1ms for libusb */
+	if (timeout_sec == 0) {
+		usec = 1000;
+	}
+	else {
+		usec = 1000000*timeout_sec;
+	}
+
+	len = printer.read(&printer.libusb, buf, size, usec);
+	
+	if (len == -ETIMEDOUT) {
+		return APP_TIMEOUT_ERR;
+	}
+	else if (len < 0) {
+		return APP_IO_ERR;	
+	}
+	else {
+		*bytes_read = len;
+		buf[len] = '\0';
 		return APP_STATUS_OK;
-err_out:
-		printer.close(&printer.libusb);
-
+	}
+	
 }

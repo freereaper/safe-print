@@ -17,6 +17,7 @@
 
 static libusb_context *libusb_ctx = NULL;
 static libusb_device **device_list;
+//static pthread_cond_t write_done_cond;
 
 static app_status_t get_libusb_device(struct libusb_component *libusb_component)
 {
@@ -216,6 +217,8 @@ app_status_t open_device(struct libusb_component  *libusb_component)
 		libusb_ctx = NULL;
 		return APP_NODEV_ERR;
 	}
+	
+	//pthread_cond_init(&write_cond_done, NULL)
 
 	return APP_STATUS_OK;
 }
@@ -223,9 +226,13 @@ app_status_t open_device(struct libusb_component  *libusb_component)
 
 int device_read(struct libusb_component *com, void *buff, int size, int usec)
 {
-	int read_bytes = 0;
+	int read_bytes = -EIO;
 	int ep = -1;
-	int ret = 0;
+	struct timeval t1, t2;
+	int used_us = 0;
+	int left_us = usec;
+	
+	gettimeofday(&t1, NULL);
 
 	ep = get_in_ep(com->device, com->config, com->interface, com->alt_setting, LIBUSB_TRANSFER_TYPE_BULK);
 	if (ep < 0) {
@@ -233,9 +240,35 @@ int device_read(struct libusb_component *com, void *buff, int size, int usec)
 		return read_bytes;
 	}
 
-	while(read_bytes == 0) {
-		libusb_bulk_transfer(com->handle, ep, (unsigned char *)buff, size, &read_bytes, usec);
-		sleep(1);
+	while (left_us > 0) {
+		libusb_bulk_transfer(com->handle, ep, (unsigned char *)buff, size, &read_bytes, left_us/1000);
+		
+		if (read_bytes == -ETIMEDOUT) {
+			break;
+		}
+		
+		if (read_bytes < 0) {
+			sys_log(LOGS_ERROR, "bulk read failed\n");
+			break;
+		}
+		
+		/* bulk read has a timeout, but bulk_read can return zero byte packets,
+		   so we must judge timeout by ourself    */
+		if (read_bytes == 0) {
+			gettimeofday(&t2, NULL);
+			
+			used_us  = (t2.tv_sec - t1.tv_sec)*1000000;
+			used_us += (t2.tv_usec > t1.tv_usec) ? (t2.tv_usec > t1.tv_usec) : 0;
+			left_us -= used_us;
+			if (left_us <= 0) {
+				read_bytes = -ETIMEDOUT;
+				left_us = 0;
+			}
+			
+			continue;
+		}
+		
+		break;
 	}
 
 	return read_bytes;
@@ -244,20 +277,18 @@ int device_read(struct libusb_component *com, void *buff, int size, int usec)
 
 int device_write(struct libusb_component *com, const void *buff, int size, int usec)
 {
-	int write_bytes = 0;
+	int write_bytes = -EIO;
 	int ep = -1;
 
 	ep = get_out_ep(com->device, com->config, com->interface, com->alt_setting, LIBUSB_TRANSFER_TYPE_BULK);
-
-//	printf("%s, %d\n", __FUNCTION__, __LINE__);
 
 	if (ep < 0) {
 		sys_log(LOGS_ERROR, "invalid bulk out endpoint\n");
 		return write_bytes;
 	}
+	
 
-
-	libusb_bulk_transfer(com->handle, ep, (unsigned char *)buff, size, &write_bytes, usec);
+	libusb_bulk_transfer(com->handle, ep, (unsigned char *)buff, size, &write_bytes, usec/1000);
 
 //	printf("%s, %d\n", __FUNCTION__, __LINE__);
 
@@ -277,6 +308,7 @@ app_status_t close_device(struct libusb_component *libusb_component)
 	libusb_exit(libusb_ctx);
 	libusb_ctx  = NULL;
 	device_list = NULL;
+	//pthread_cond_destroy(&write_cond_done, NULL)
 
 	return APP_STATUS_OK;
 }

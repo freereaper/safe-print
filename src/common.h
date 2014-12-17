@@ -23,7 +23,8 @@ typedef enum app_status{
 	APP_NOMEM_ERR = -4,
 	APP_NODEV_ERR = -5,
 	APP_USB_ERR   = -6,
-
+	APP_TIMEOUT_ERR = -7,
+	APP_STATUS_ERR = -8,
 
 }app_status_t;
 

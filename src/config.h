@@ -11,8 +11,16 @@
 #ifndef __CONFIG_H
 #define __CONFIG_H
 #include <string.h>
-#include "printer.h"
 
+struct app_config {
+	const char *firmware;
+
+	const char *log_file;
+	int log_level;
+	bool log_verbose;
+	bool syslog_enabled;
+
+};
 
 #define CONFIG_FILE   "config.ini"
 #define MATCH(s, n) strcmp(section, s) == 0 && strcmp(name, n) == 0
