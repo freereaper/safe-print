@@ -41,6 +41,9 @@ static const char pjl_ustatus_cmd[] = "\e%-12345X@PJL USTATUS DEVICE = ON \r\n@P
 static const char pjl_job_end_cmd[] = "\e%-12345X@PJL EOJ \r\n\e%-12345X";
 static const char pjl_ustatus_off_cmd[] = "\e%-12345X@PJL USTATUSOFF \r\n\e%-12345X";
 
+static app_status_t printer_write(void *buf, int size, int timeout_sec, int *bytes_write);
+static app_status_t printer_read(void *buf, int size, int timeout_sec, int *bytes_read);
+
 
 
 app_status_t printer_param_init(void)
@@ -62,6 +65,116 @@ app_status_t printer_param_init(void)
 	}
 
 	return APP_STATUS_OK;
+}
+
+static app_status_t load_firmware()
+{
+	int len;
+	int fd = open(config->firmware, O_RDONLY);
+	void *write_buf = printer.w_buf;
+	app_status_t status = APP_NOENT_ERR;
+	if (fd < 0) {
+		sys_log(LOGS_ERROR, "unable to open firmware file \n");
+	}
+	else {
+		while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
+			int write_bytes = 0;
+			
+			status = printer_write(write_buf, len, 10, &write_bytes);
+			
+			if (status != APP_STATUS_OK) {
+				break;
+			}
+			
+		}
+	}
+	
+	close(fd);
+	
+	return status;
+	
+}
+
+static void prase_status(char *buff, int *status, int *end_page)
+{
+	char *p;
+	
+	if (buff[0] == '\0') {
+		return;	
+	}
+	
+	if ((p = strcasestr(buff, "code=")) != NULL) {
+		*status = strtol(p+5, NULL, 10);
+	}
+	
+	if ((p = strcasestr(buff, "ustatus job")) != NULL) {
+		if (strncasecmp(p+13, "end", 3) == 0) {
+			if ((p = strcasestr(p+5+13, "pages=")) != NULL) {
+				*end_page = strtol(p+6, NULL, 10);
+			}
+		}
+	}
+}
+
+
+
+static void read_status_thread(void *args)
+{
+	struct printer_task *task = &(printer.current_task);
+	int bytes_read;
+	app_status_t status = APP_STATUS_OK;
+	
+	pthread_detach(pthread_self());
+	sys_log(LOGS_INFO, "Starting read status thread %d\n", (int)printer.current_task.tid);
+	
+	/* default is ready */
+	printer->status_code = 10001;
+	task->end_page  	 = 0;
+	task->done      	 = 0;
+	task->abort     	 = 0;
+	
+	while (!task->abort) {
+		status = printer_read(printer->r_buf, RD_BUFFER_SIZE, 0, &bytes_read);
+		
+		switch (status) {
+		case APP_STATUS_OK:
+			prase_status((char *)(printer.r_buf), &printer.status_code, &task->end_page);
+			break;
+		case APP_TIMEOUT_ERR:
+			sleep(1);
+			break;
+		case APP_IO_ERR:
+			printer.status_code = 5000+status;
+		default:
+			goto io_err:
+		}	
+	}
+	
+io_err:
+	task->done = 1;
+	pthread_cond_signal(&task->read_done_cond);
+	
+}
+
+
+static app_status_t printer_start(void)
+{
+	int bytes_write;
+	app_status_t ret = APP_STATUS_OK;
+	
+	do {
+		if ((ret = load_firmware()) != APP_STATUS_OK) {
+			break;
+		}
+		
+		printer_write(pjl_ustatus_cmd, sizeof(pjl_ustatus_cmd) - 1, 3, &bytes_write);
+		pthread_mutex_init(&printer.current_task.mutex, NULL);
+		pthread_cond_init(&printer.current_task.read_done_cond, NULL);
+		pthread_create(&printer.current_task.tid, NULL, (void *(*)(void *))read_status_thread, NULL);
+	} while (0);
+	
+	return ret;
+
 }
 
 int main(int argc, char *argv)
@@ -117,14 +230,14 @@ int main(int argc, char *argv)
 	
 
 err4_out:
-	pthread_mutex_lock(&printer.cureent_task.mutex);
+	pthread_mutex_lock(&printer.current_task.mutex);
 	printer.current_task.abort = 1;
 	while (!printer.current_task.done) {
-		pthread_cond_wait(&printer.task.read_done_cond, &printer.cureent_task.mutex);
+		pthread_cond_wait(&printer.current_task.read_done_cond, &printer.current_task.mutex);
 	}
-	pthread_mutex_unlock(&printer.cureent_task.mutex);
-	pthread_mutex_destroy(&printer.cureent_task.mutex);
-	pthread_cond_destroy(&printer.task.read_done_cond);
+	pthread_mutex_unlock(&printer.current_task.mutex);
+	pthread_mutex_destroy(&printer.current_task.mutex);
+	pthread_cond_destroy(&printer.current_task.read_done_cond);
 
 err3_out:
 	printer.close(&printer.libusb);
@@ -174,118 +287,6 @@ static app_status_t printer_write(void *buf, int size, int timeout_sec, int *byt
 	
 	return status;
 }
-
-
-static app_status_t load_firmware()
-{
-	int len;
-	int fd = open(config->firmware, O_RDONLY);
-	void *write_buf = printer.w_buf;
-	app_status_t status = APP_NOENT_ERR;
-	if (fd < 0) {
-		sys_log(LOGS_ERROR, "unable to open firmware file \n");
-	}
-	else {
-		while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
-			int write_bytes = 0;
-			
-			status = printer_write(write_buf, len, 10, &write_bytes);
-			
-			if (status != APP_STATUS_OK) {
-				break;
-			}
-			
-		}
-	}
-	
-	close(fd);
-	
-	return status;
-	
-}
-
-
-static app_status_t printer_start(void)
-{
-	int bytes_write;
-	app_status_t ret = APP_STATUS_OK;
-	
-	do {
-		if ((ret = load_firmware()) != APP_STATUS_OK) {
-			break;
-		}
-		
-		printer_write(pjl_ustatus_cmd, sizeof(pjl_ustatus_cmd) - 1, 3, &bytes_write);
-		pthread_mutex_init(&printer.current_task.mutex, NULL);
-		pthread_cond_init(&printer.current_task.read_done_cond, NULL);
-		pthread_create(&printer.current_task.tid, NULL, (void *(*)(void *))read_status_thread, NULL);
-	} while (0);
-	
-	return ret;
-
-}
-
-static void prase_status(char *buff, int *status, int *end_page)
-{
-	char *p;
-	
-	if (buff[0] == '\0') {
-		return;	
-	}
-	
-	if ((p = strcasestr(buff, "code=")) != NULL) {
-		*status = strtol(p+5, NULL, 10);
-	}
-	
-	if ((p = strcasestr(buff, "ustatus job")) != NULL) {
-		if (strncasecmp(p+13, "end", 3) == 0) {
-			if ((p = strcasestr(p+5+13, "pages=")) != NULL) {
-				*end_page = strtol(p+6, NULL, 10);
-			}
-		}
-	}
-}
-
-static void read_status_thread(void *args)
-{
-	struct printer_task *task = &(printer.current_task);
-	int bytes_read;
-	app_status_t status = APP_STATUS_OK;
-	
-	pthread_detach(pthread_self());
-	sys_log(LOGS_INFO, "Starting read status thread %d\n", (int)printer.current_task.tid);
-	
-	/* default is ready */
-	printer->status_code = 10001;
-	task->end_page  	 = 0;
-	task->done      	 = 0;
-	task->abort     	 = 0;
-	
-	while (!task->abort) {
-		status = printer_read(printer->r_buf, RD_BUFFER_SIZE, 0, &bytes_read);
-		
-		switch (status) {
-		case APP_STATUS_OK:
-			prase_status((char *)(printer.r_buf), &printer.status_code, &task->end_page);
-			break;
-		case APP_TIMEOUT_ERR:
-			sleep(1);
-			break;
-		case APP_IO_ERR:
-			printer.status_code = 5000+status;
-		default:
-			goto io_err:
-		}	
-	}
-	
-io_err:
-	task->done = 1;
-	pthread_cond_signal(&task->read_done_cond);
-	
-}
-
-
-
 
 static app_status_t printer_read(void *buf, int size, int timeout_sec, int *bytes_read)
 {

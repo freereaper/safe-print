@@ -22,8 +22,6 @@
 #define WRITE_RETRY_MAX   3
 
 
-
-
 struct printer_task {
 	int done;
 	int abort;
