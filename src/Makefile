@@ -2,7 +2,7 @@ DEPENDENCY_TARGETS=libusb inih sqlite
 
 
 CC = arm-linux-gcc
-FINAL_CFLAGS = -std=c99 -I../deps/libusb/libusb -I../deps/inih/
+FINAL_CFLAGS = -std=c99 -D_GNU_SOURCE -I../deps/libusb/libusb -I../deps/inih/
 FINAL_LDFLAGS=
 FINAL_LDLIBS = -lpthread -lrt
 

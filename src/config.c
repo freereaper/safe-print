@@ -17,17 +17,6 @@
 #include "log.h"
 #include "config.h"
 
-
-static char *strdup(const char *str)
-{
-    int n = strlen(str) + 1;
-    char *dup = malloc(n * sizeof(char));
-    if(dup) {
-        strcpy(dup, str);
-    }
-    return dup;
-}
-
 static bool resolve_bool(const char *val)
 {
 	if (strcasecmp(val, "false") == 0) {

@@ -8,11 +8,13 @@
  * @Copyright (c) DHU, CST.  All Rights Reserved
  */
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h>
 #include "common.h"
 #include "log.h"
 #include "musb.h"
@@ -70,7 +72,7 @@ app_status_t printer_param_init(void)
 static app_status_t load_firmware()
 {
 	int len;
-	int fd = open(config->firmware, O_RDONLY);
+	int fd = open(printer.config.firmware, O_RDONLY);
 	void *write_buf = printer.w_buf;
 	app_status_t status = APP_NOENT_ERR;
 	if (fd < 0) {
@@ -128,13 +130,13 @@ static void read_status_thread(void *args)
 	sys_log(LOGS_INFO, "Starting read status thread %d\n", (int)printer.current_task.tid);
 	
 	/* default is ready */
-	printer->status_code = 10001;
+	printer.status_code = 10001;
 	task->end_page  	 = 0;
 	task->done      	 = 0;
 	task->abort     	 = 0;
 	
 	while (!task->abort) {
-		status = printer_read(printer->r_buf, RD_BUFFER_SIZE, 0, &bytes_read);
+		status = printer_read(printer.r_buf, RD_BUFFER_SIZE, 0, &bytes_read);
 		
 		switch (status) {
 		case APP_STATUS_OK:
@@ -146,7 +148,7 @@ static void read_status_thread(void *args)
 		case APP_IO_ERR:
 			printer.status_code = 5000+status;
 		default:
-			goto io_err:
+			goto io_err;
 		}	
 	}
 	
@@ -167,7 +169,7 @@ static app_status_t printer_start(void)
 			break;
 		}
 		
-		printer_write(pjl_ustatus_cmd, sizeof(pjl_ustatus_cmd) - 1, 3, &bytes_write);
+		printer_write((void *)pjl_ustatus_cmd, sizeof(pjl_ustatus_cmd) - 1, 3, &bytes_write);
 		pthread_mutex_init(&printer.current_task.mutex, NULL);
 		pthread_cond_init(&printer.current_task.read_done_cond, NULL);
 		pthread_create(&printer.current_task.tid, NULL, (void *(*)(void *))read_status_thread, NULL);
@@ -204,7 +206,7 @@ int main(int argc, char *argv)
 		goto err2_out;
 	}
 
-	ret = printer_init();
+	ret = printer_start();
 	if (ret != APP_STATUS_OK) {
 		goto err3_out;
 	}
@@ -216,8 +218,8 @@ int main(int argc, char *argv)
 		goto err4_out;
 	}
 
-	while ((len = read(fd, write_buf, sizeof(write_buf))) > 0) {
-		app_status_t status = printer_write(write_buf, len, 10, &write_bytes);
+	while ((len = read(fd, printer.w_buf, sizeof(printer.w_buf))) > 0) {
+		app_status_t status = printer_write(printer.w_buf, len, 10, &write_bytes);
 		if (status != APP_STATUS_OK) {
 			close(fd);
 			goto err4_out;
@@ -225,8 +227,8 @@ int main(int argc, char *argv)
 	}
 	close(fd);
 	
-	printer_write(pjl_job_end_cmd, sizeof(pjl_job_end_cmd)-1, 3, &write_bytes);
-	printer_write(pjl_ustatus_off_cmd, sizeof(pjl_ustatus_off_cmd)-1, 3, &write_bytes);
+	printer_write((void *)pjl_job_end_cmd, sizeof(pjl_job_end_cmd)-1, 3, &write_bytes);
+	printer_write((void *)pjl_ustatus_off_cmd, sizeof(pjl_ustatus_off_cmd)-1, 3, &write_bytes);
 	
 
 err4_out:
@@ -242,8 +244,8 @@ err4_out:
 err3_out:
 	printer.close(&printer.libusb);
 err2_out:
-	free(printer.w_buf)
-	free(printer.r_buf)
+	free(printer.w_buf);
+	free(printer.r_buf);
 	printer.w_buf = NULL;
 	printer.r_buf = NULL;
 err1_out:
@@ -265,12 +267,12 @@ static app_status_t printer_write(void *buf, int size, int timeout_sec, int *byt
 		
 		if (printer.status_code >= 41000) {
 			sys_log(LOGS_ERROR, "printer break down \n");
-			status = APP_IO_ERROR;
+			status = APP_IO_ERR;
 			break;
 		}
 		
 		if ( len < 0) {
-			sys_log(LOGS_ERR, "write failed\n");
+			sys_log(LOGS_ERROR, "write failed\n");
 			status = APP_IO_ERR;
 			break;
 		}
@@ -313,7 +315,7 @@ static app_status_t printer_read(void *buf, int size, int timeout_sec, int *byte
 	}
 	else {
 		*bytes_read = len;
-		buf[len] = '\0';
+		*((char *)buf + len)= '\0';
 		return APP_STATUS_OK;
 	}
 	
